@@ -3,6 +3,8 @@ export interface DoiResult {
   bibtex?: string;
   source?: string;
   error?: string;
+  /** "not-found" = DOI not registered (likely wrong); "lookup-error" = transient. */
+  kind?: string;
   doi?: string;
 }
 

@@ -41,9 +41,15 @@ from that archive against the `nodejs24` runtime base image.
 ./scripts/deploy-archive.sh
 ```
 
-Then deploy the uploaded archive from Cloud Run, pointing at:
-`gs://open-sauce-499812-bibverify-deploy/bibverify.tar.gz`
-with start command `node server/index.js`, base image `nodejs24`.
+Then deploy the uploaded archive from Cloud Run, pointing
+`sourceCode.cloudStorageSource.object` at the **content-hashed object name** the
+script prints (also written to `.deploy/object-name.txt`), with start command
+`node server/index.js`, base image `nodejs24`.
+
+> ⚠️ **Always use a unique object name per build.** Cloud Run dedups revisions by
+> source pointer — redeploying the *same* `gs://…/object` path silently reuses the
+> old revision and your code change won't go live. The script hashes the archive
+> so each build gets a fresh name.
 
 ---
 

@@ -1,4 +1,5 @@
 import type { BibEntry, BibField } from "./bibtex";
+import { hasNonLatinScript } from "./latex";
 
 export type FieldStatus = "added" | "changed" | "removed" | "same";
 
@@ -11,7 +12,15 @@ export interface FieldDiff {
 }
 
 function normalize(v: string): string {
-  return v.replace(/\s+/g, " ").trim();
+  // Ignore protective braces, percent-escapes we emit, and whitespace so that
+  // {{Title}} == Title and …8:4%3C194… == …8:4<194… for comparison.
+  return v
+    .replace(/\\([%&#_$])/g, "$1") // \& -> &, \_ -> _, \%3C -> %3C, …
+    .replace(/%3c/gi, "<")
+    .replace(/%3e/gi, ">")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function looseEqual(a: string, b: string): boolean {
@@ -67,21 +76,40 @@ export function summarize(diffs: FieldDiff[]): DiffSummary {
 
 export type Choice = "original" | "fetched";
 
-/** Default side for a field: keep the registry value, but keep user-only fields. */
-export function defaultChoice(d: FieldDiff): Choice {
-  return d.status === "removed" ? "original" : "fetched";
+export interface MergeOptions {
+  /** Default the title field to the user's own value rather than the registry's. */
+  keepTitles?: boolean;
+  /** Avoid importing non-Latin registry values that pdfLaTeX can't typeset. */
+  latexSafe?: boolean;
+}
+
+/** Default side for a field: take the registry value for real changes/additions,
+ *  but keep the user's own text where it's equivalent or user-only (preserving
+ *  their formatting, e.g. protective {{…}} braces). */
+export function defaultChoice(d: FieldDiff, opts?: MergeOptions): Choice {
+  if (d.status === "removed" || d.status === "same") return "original";
+  // The registry sometimes records names/journals in a non-Latin script
+  // (e.g. Arabic). pdfLaTeX can't typeset those, so prefer the user's value.
+  if (opts?.latexSafe && d.fetched && hasNonLatinScript(d.fetched) && !(d.original && hasNonLatinScript(d.original))) {
+    return "original";
+  }
+  if (opts?.keepTitles && d.key.toLowerCase() === "title" && d.status === "changed") {
+    return "original";
+  }
+  return "fetched";
 }
 
 /** Build the merged entry from a set of per-field choices. */
 export function mergeEntry(
   original: BibEntry,
   diffs: FieldDiff[],
-  choices: Record<string, Choice>
+  choices: Record<string, Choice>,
+  opts?: MergeOptions
 ): BibEntry {
   const fields: BibField[] = [];
   for (const d of diffs) {
     const lk = d.key.toLowerCase();
-    const choice = choices[lk] ?? defaultChoice(d);
+    const choice = choices[lk] ?? defaultChoice(d, opts);
     if (choice === "fetched") {
       if (d.fetched !== undefined) fields.push({ key: d.key, value: d.fetched });
     } else {
@@ -93,5 +121,7 @@ export function mergeEntry(
     citationKey: original.citationKey,
     fields,
     raw: original.raw,
+    start: original.start,
+    end: original.end,
   };
 }

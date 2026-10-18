@@ -1,3 +1,5 @@
+import { toLatexSafe, urlSafe, urlUnsafe } from "./latex";
+
 // A small, dependency-free BibTeX parser and serializer.
 //
 // The parser locates each entry by scanning for an '@' that is followed by a
@@ -16,6 +18,9 @@ export interface BibEntry {
   fields: BibField[];
   /** The exact original text of the entry, '@' through closing brace. */
   raw: string;
+  /** Character offsets of `raw` within the source text (for in-place replace). */
+  start: number;
+  end: number;
 }
 
 const isLetter = (c: string) => c >= "A" && c <= "Z" || c >= "a" && c <= "z";
@@ -98,7 +103,14 @@ export function parseBibtex(input: string): BibEntry[] {
     }
 
     const parsed = parseEntryBody(body);
-    entries.push({ type: lowerType, citationKey: parsed.citationKey, fields: parsed.fields, raw });
+    entries.push({
+      type: lowerType,
+      citationKey: parsed.citationKey,
+      fields: parsed.fields,
+      raw,
+      start: atPos,
+      end: closePos + 1,
+    });
     i = closePos + 1;
   }
 
@@ -187,31 +199,71 @@ export function getField(entry: BibEntry, key: string): string | undefined {
 export function extractDoi(entry: BibEntry): string | null {
   const raw = getField(entry, "doi");
   if (raw) return cleanDoi(raw);
-  // Some entries hide the DOI inside a url field.
-  const url = getField(entry, "url");
-  if (url) {
-    const m = url.match(/(?:dx\.)?doi\.org\/(10\.\S+)/i);
-    if (m) return cleanDoi(m[1]);
+
+  // Some entries hide a DOI inside url/note/howpublished.
+  for (const field of ["url", "note", "howpublished", "eprint"]) {
+    const v = getField(entry, field);
+    if (v) {
+      const m = v.match(/\b(10\.\d{4,9}\/[^\s{}"]+)/i);
+      if (m) return cleanDoi(m[1]);
+    }
+  }
+
+  // arXiv eprint -> DataCite DOI (e.g. 1706.03762 -> 10.48550/arXiv.1706.03762).
+  const eprint = getField(entry, "eprint");
+  const kind = (getField(entry, "archiveprefix") || getField(entry, "eprinttype") || "").toLowerCase();
+  if (eprint) {
+    const id = eprint.replace(/^arxiv:/i, "").trim();
+    if (kind.includes("arxiv") || /^\d{4}\.\d{4,5}(v\d+)?$/.test(id)) {
+      return `10.48550/arXiv.${id.replace(/v\d+$/, "")}`;
+    }
   }
   return null;
 }
 
 export function cleanDoi(raw: string): string {
-  return raw
-    .trim()
+  // Undo any LaTeX-safe URL escaping we emit so re-uploaded files still resolve.
+  return urlUnsafe(raw.trim())
     .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
     .replace(/^doi:\s*/i, "")
     .trim();
 }
 
-export function serializeEntry(entry: BibEntry): string {
+export interface SerializeOptions {
+  /** Wrap the title value in an extra brace pair to protect capitalization. */
+  protectTitleCaps?: boolean;
+  /** Convert Unicode/specials to LaTeX-safe escapes (pdfLaTeX + BibTeX). */
+  latexSafe?: boolean;
+}
+
+const URL_FIELDS = new Set(["doi", "url", "eprint"]);
+
+function formatValue(key: string, value: string, opts?: SerializeOptions): string {
+  let v = value;
+  if (opts?.latexSafe) {
+    if (URL_FIELDS.has(key.toLowerCase())) {
+      v = urlSafe(v);
+    } else {
+      v = toLatexSafe(v);
+    }
+  }
+  if (opts?.protectTitleCaps && key.toLowerCase() === "title") {
+    v = v.trim();
+    // Don't double-wrap titles that already carry protective braces.
+    const inner = v.startsWith("{") && v.endsWith("}") ? v : `{${v}}`;
+    return `{${inner}}`;
+  }
+  return `{${v}}`;
+}
+
+export function serializeEntry(entry: BibEntry, opts?: SerializeOptions): string {
   const pad = entry.fields.reduce((m, f) => Math.max(m, f.key.length), 0);
   const lines = entry.fields.map(
-    (f) => `  ${f.key.padEnd(pad)} = {${f.value}}`
+    (f) => `  ${f.key.padEnd(pad)} = ${formatValue(f.key, f.value, opts)}`
   );
   return `@${entry.type}{${entry.citationKey},\n${lines.join(",\n")}\n}`;
 }
 
-export function serializeBib(entries: BibEntry[]): string {
-  return entries.map(serializeEntry).join("\n\n") + "\n";
+export function serializeBib(entries: BibEntry[], opts?: SerializeOptions): string {
+  return entries.map((e) => serializeEntry(e, opts)).join("\n\n") + "\n";
 }

@@ -40,8 +40,15 @@ gcloud storage buckets update "gs://$BUCKET" \
   --update-labels=used-by=cloudrun --project "$PROJECT"
 
 echo "==> Uploading archive"
-gcloud storage cp .deploy/bibverify.tar.gz "gs://$BUCKET/bibverify.tar.gz" --project "$PROJECT"
+# Use a content-hashed object name. Cloud Run dedups revisions by source
+# pointer, so reusing the same object path means code changes are NOT picked
+# up. A unique name per build forces a fresh revision.
+HASH=$(sha1sum .deploy/bibverify.tar.gz | cut -c1-8)
+OBJ="bibverify-${HASH}.tar.gz"
+gcloud storage cp .deploy/bibverify.tar.gz "gs://$BUCKET/$OBJ" --project "$PROJECT"
+echo "$OBJ" > .deploy/object-name.txt
 
 echo
-echo "Archive ready at gs://$BUCKET/bibverify.tar.gz"
-echo "Deploy it from Cloud Run with: base image nodejs24, command 'node server/index.js'."
+echo "Archive ready at gs://$BUCKET/$OBJ"
+echo "Deploy from Cloud Run with: base image nodejs24, command 'node server/index.js',"
+echo "pointing sourceCode.cloudStorageSource.object at: $OBJ"
